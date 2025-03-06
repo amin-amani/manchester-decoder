@@ -44,7 +44,7 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
-
+#define UID 3001
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,10 +76,76 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
         {
         	  edge[count%2] = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
         	  count++;
-        	  HAL_GPIO_TogglePin(GPIOD, LD6_Pin);
+
 
         }
     }
+}
+void DelayUs(int32_t us)
+{
+
+}
+void sendManchesterBit(uint8_t bt) {
+    if (bt == 0) {
+    	GPIOD->ODR|=GPIO_PIN_15;
+        DelayUs(250);  // ~833µs
+        GPIOD->ODR|=GPIO_PIN_15;
+        DelayUs(250);  // ~833µs
+    } else {
+    	 GPIOD->ODR|=GPIO_PIN_15;
+        HAL_Delay(250);  // ~833µs
+    	 GPIOD->ODR&=~GPIO_PIN_15;
+        DelayUs(250);  // ~833µs
+    }
+
+}
+uint8_t calculateChecksum(uint16_t val1, uint16_t val2, uint16_t val3) {
+    uint8_t checksum = 0;
+    checksum ^= (val1 & 0xFF) ^ (val1 >> 8);
+    checksum ^= (val2 & 0xFF) ^ (val2 >> 8);
+    checksum ^= (val3 & 0xFF) ^ (val3 >> 8);
+    return checksum;
+}
+void sendManchesterEncodedData( uint16_t Soil_Moisture_20cm_L,uint16_t Soil_Moisture_40cm_L) {
+    uint8_t i, j;
+    uint8_t checksum =
+        calculateChecksum(UID, Soil_Moisture_20cm_L, Soil_Moisture_40cm_L);
+    uint8_t packet[7];
+    // Construct data packet (3x uint16_t + 1x checksum = 56 bits)
+
+    packet[0] = ((UID >> 8) & 0xFF);
+    packet[1] = (UID & 0xFF);
+    packet[2] = (Soil_Moisture_20cm_L >> 8) & 0xFF;
+    packet[3] = (Soil_Moisture_20cm_L & 0xFF);
+    packet[4] = (Soil_Moisture_40cm_L >> 8) & 0xFF;
+    packet[5] = (Soil_Moisture_40cm_L & 0xFF);
+    packet[6] = checksum;
+
+    // Send Preamble (10101010 sequence)
+    for (i = 0; i < 8; i++) {
+        sendManchesterBit(1);
+        sendManchesterBit(0);
+    }
+
+    // Send Start Bit (1)
+    sendManchesterBit(1);
+
+    // Encode & Transmit Each Byte
+    for (i = 0; i < 7; i++) {
+        for (j = 0; j < 8; j++) {
+            sendManchesterBit((packet[i] >> (7 - j)) & 0x01);
+        }
+    }
+
+    // Send Stop Bit (0)
+    sendManchesterBit(0);
+
+    // Send Ending Pulses for Receiver Synchronization
+    GPIOD->ODR|=GPIO_PIN_15;
+    DelayUs(150);
+    GPIOD->ODR|=GPIO_PIN_15;
+    DelayUs(150);
+
 }
 /* USER CODE END 0 */
 
