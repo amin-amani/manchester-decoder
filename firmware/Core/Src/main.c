@@ -81,21 +81,22 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
         }
     }
 }
-void DelayUs(int32_t us)
+void delay_us (uint16_t us)
 {
-
+	__HAL_TIM_SET_COUNTER(&htim1,0);  // set the counter value a 0
+	while (__HAL_TIM_GET_COUNTER(&htim1) < us);  // wait for the counter to reach the us input in the parameter
 }
 void sendManchesterBit(uint8_t bt) {
     if (bt == 0) {
-    	GPIOD->ODR|=GPIO_PIN_15;
-        DelayUs(250);  // ~833µs
+    	GPIOD->ODR&=~GPIO_PIN_15;
+    	delay_us(250);  // ~833µs
         GPIOD->ODR|=GPIO_PIN_15;
-        DelayUs(250);  // ~833µs
+        delay_us(250);  // ~833µs
     } else {
     	 GPIOD->ODR|=GPIO_PIN_15;
-        HAL_Delay(250);  // ~833µs
+    	 delay_us(250);  // ~833µs
     	 GPIOD->ODR&=~GPIO_PIN_15;
-        DelayUs(250);  // ~833µs
+    	 delay_us(250);  // ~833µs
     }
 
 }
@@ -106,7 +107,8 @@ uint8_t calculateChecksum(uint16_t val1, uint16_t val2, uint16_t val3) {
     checksum ^= (val3 & 0xFF) ^ (val3 >> 8);
     return checksum;
 }
-void sendManchesterEncodedData( uint16_t Soil_Moisture_20cm_L,uint16_t Soil_Moisture_40cm_L) {
+void sendManchesterEncodedData( uint16_t Soil_Moisture_20cm_L,uint16_t Soil_Moisture_40cm_L)
+{
     uint8_t i, j;
     uint8_t checksum =
         calculateChecksum(UID, Soil_Moisture_20cm_L, Soil_Moisture_40cm_L);
@@ -121,16 +123,16 @@ void sendManchesterEncodedData( uint16_t Soil_Moisture_20cm_L,uint16_t Soil_Mois
     packet[5] = (Soil_Moisture_40cm_L & 0xFF);
     packet[6] = checksum;
 
-    // Send Preamble (10101010 sequence)
+    // Send Preamble (10101010 sequence) 16
     for (i = 0; i < 8; i++) {
         sendManchesterBit(1);
         sendManchesterBit(0);
     }
 
-    // Send Start Bit (1)
+    // Send Start Bit (1) 1
     sendManchesterBit(1);
 
-    // Encode & Transmit Each Byte
+    // Encode & Transmit Each Byte 7*8=56  total=56+2+1+16
     for (i = 0; i < 7; i++) {
         for (j = 0; j < 8; j++) {
             sendManchesterBit((packet[i] >> (7 - j)) & 0x01);
@@ -138,15 +140,16 @@ void sendManchesterEncodedData( uint16_t Soil_Moisture_20cm_L,uint16_t Soil_Mois
     }
 
     // Send Stop Bit (0)
-    sendManchesterBit(0);
+    sendManchesterBit(0); //2
 
     // Send Ending Pulses for Receiver Synchronization
     GPIOD->ODR|=GPIO_PIN_15;
-    DelayUs(150);
-    GPIOD->ODR|=GPIO_PIN_15;
-    DelayUs(150);
+    delay_us(150);
+    GPIOD->ODR&=~GPIO_PIN_15;
+    delay_us(750);
 
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -181,8 +184,9 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
+  HAL_TIM_Base_Start(&htim1);
+//  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+//  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
 
   /* USER CODE END 2 */
 
@@ -190,9 +194,10 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-        HAL_TIM_IC_Stop_IT(&htim2, TIM_CHANNEL_1);
-    printf("Delta edge0: %d, edge1: %d delta=%d \n", edge[0], edge[1],(edge[1]-edge[0]));
-    HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
+	  sendManchesterEncodedData(6,8);
+//        HAL_TIM_IC_Stop_IT(&htim2, TIM_CHANNEL_1);
+//    printf("Delta edge0: %d, edge1: %d delta=%d \n", edge[0], edge[1],(edge[1]-edge[0]));
+//    HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
     HAL_Delay(100);
     /* USER CODE END WHILE */
 
@@ -261,8 +266,6 @@ static void MX_TIM1_Init(void)
 
   TIM_ClockConfigTypeDef sClockSourceConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
 
   /* USER CODE BEGIN TIM1_Init 1 */
 
@@ -270,7 +273,7 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 168-1;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 1000;
+  htim1.Init.Period = 65535;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -283,42 +286,15 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 100;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
-  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
-  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
-  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-  sBreakDeadTimeConfig.DeadTime = 0;
-  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
-  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
-  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
-  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN TIM1_Init 2 */
 
   /* USER CODE END TIM1_Init 2 */
-  HAL_TIM_MspPostInit(&htim1);
 
 }
 
