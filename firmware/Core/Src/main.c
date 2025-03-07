@@ -21,7 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <inttypes.h>
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,12 +54,37 @@ static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-volatile int edge[2];
 
+#define DATA_SIZE 200
+volatile uint32_t bitStream[DATA_SIZE]; // Store decoded bits
+volatile int bitIndex = 0;
+volatile uint64_t idle_timer=0;
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+bool  encode_data(uint16_t *uid,uint16_t *Soil_Moisture_20cm_L,uint16_t  *Soil_Moisture_40cm_L)
+{int i ;
+	for(i=0;i<104;i++){
+
+		 printf("%d ",bitStream[i]);
+	}
+	 printf("\n");
+return true;
+}
+
+void command_received()
+{
+	uint16_t Soil_Moisture_20cm_L,Soil_Moisture_40cm_L,uid;
+
+	encode_data(&uid,&Soil_Moisture_20cm_L,&Soil_Moisture_40cm_L);
+
+	 printf(" 20cm:%d  40cm:%d uid:%d bits=%d\n",Soil_Moisture_20cm_L,Soil_Moisture_40cm_L,uid,bitIndex);
+	 bitIndex=0;
+
+
+
+}
 int _write(int file, char *ptr, int len)
 {
   /* Implement your write code here, this is used by puts and printf for example */
@@ -67,16 +93,52 @@ int _write(int file, char *ptr, int len)
     ITM_SendChar((*ptr++));
   return len;
 }
+void clear_idle_timer()
+{
+	idle_timer=0;
+}
+
+bool idle_time()
+{
+	const uint64_t max_counter= 5000;
+
+	if(idle_timer<max_counter)
+	{
+	idle_timer++;
+	GPIOD->ODR &= ~GPIO_PIN_15;
+	return false;
+	}
+	if(idle_timer==max_counter)
+	{
+		GPIOD->ODR |= GPIO_PIN_15; // Toggle LED for debugging
+		command_received();
+		idle_timer++;
+
+	}
+	   return true;
+
+}
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 {
-	static int count=0;
+		static uint32_t prev=0,current=0;
     if (htim->Instance == TIM2)
     {
         if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)
         {
-        	  edge[count%2] = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-        	  count++;
-
+        	clear_idle_timer();
+        	if(bitIndex==0){
+        		prev =HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+        		bitStream[0] =prev;
+        		bitIndex++;
+        		return;
+        	}
+        	if(bitIndex<DATA_SIZE)
+        	{
+			current=HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
+			bitStream[bitIndex] =current-prev;
+			prev=current;
+			bitIndex++;
+        	}
 
         }
     }
@@ -85,69 +147,6 @@ void delay_us (uint16_t us)
 {
 	__HAL_TIM_SET_COUNTER(&htim1,0);  // set the counter value a 0
 	while (__HAL_TIM_GET_COUNTER(&htim1) < us);  // wait for the counter to reach the us input in the parameter
-}
-void sendManchesterBit(uint8_t bt) {
-    if (bt == 0) {
-    	GPIOD->ODR&=~GPIO_PIN_15;
-    	delay_us(250);  // ~833µs
-        GPIOD->ODR|=GPIO_PIN_15;
-        delay_us(250);  // ~833µs
-    } else {
-    	 GPIOD->ODR|=GPIO_PIN_15;
-    	 delay_us(250);  // ~833µs
-    	 GPIOD->ODR&=~GPIO_PIN_15;
-    	 delay_us(250);  // ~833µs
-    }
-
-}
-uint8_t calculateChecksum(uint16_t val1, uint16_t val2, uint16_t val3) {
-    uint8_t checksum = 0;
-    checksum ^= (val1 & 0xFF) ^ (val1 >> 8);
-    checksum ^= (val2 & 0xFF) ^ (val2 >> 8);
-    checksum ^= (val3 & 0xFF) ^ (val3 >> 8);
-    return checksum;
-}
-void sendManchesterEncodedData( uint16_t Soil_Moisture_20cm_L,uint16_t Soil_Moisture_40cm_L)
-{
-    uint8_t i, j;
-    uint8_t checksum =
-        calculateChecksum(UID, Soil_Moisture_20cm_L, Soil_Moisture_40cm_L);
-    uint8_t packet[7];
-    // Construct data packet (3x uint16_t + 1x checksum = 56 bits)
-
-    packet[0] = ((UID >> 8) & 0xFF);
-    packet[1] = (UID & 0xFF);
-    packet[2] = (Soil_Moisture_20cm_L >> 8) & 0xFF;
-    packet[3] = (Soil_Moisture_20cm_L & 0xFF);
-    packet[4] = (Soil_Moisture_40cm_L >> 8) & 0xFF;
-    packet[5] = (Soil_Moisture_40cm_L & 0xFF);
-    packet[6] = checksum;
-
-    // Send Preamble (10101010 sequence) 16
-    for (i = 0; i < 8; i++) {
-        sendManchesterBit(1);
-        sendManchesterBit(0);
-    }
-
-    // Send Start Bit (1) 1
-    sendManchesterBit(1);
-
-    // Encode & Transmit Each Byte 7*8=56  total=56+2+1+16
-    for (i = 0; i < 7; i++) {
-        for (j = 0; j < 8; j++) {
-            sendManchesterBit((packet[i] >> (7 - j)) & 0x01);
-        }
-    }
-
-    // Send Stop Bit (0)
-    sendManchesterBit(0); //2
-
-    // Send Ending Pulses for Receiver Synchronization
-    GPIOD->ODR|=GPIO_PIN_15;
-    delay_us(150);
-    GPIOD->ODR&=~GPIO_PIN_15;
-    delay_us(750);
-
 }
 
 /* USER CODE END 0 */
@@ -186,7 +185,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start(&htim1);
 //  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-//  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
+  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
 
   /* USER CODE END 2 */
 
@@ -194,11 +193,14 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  sendManchesterEncodedData(6,8);
+
+	  idle_time();
+
+//	  sendManchesterEncodedData(6,8);
 //        HAL_TIM_IC_Stop_IT(&htim2, TIM_CHANNEL_1);
 //    printf("Delta edge0: %d, edge1: %d delta=%d \n", edge[0], edge[1],(edge[1]-edge[0]));
 //    HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
-    HAL_Delay(100);
+  //  HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
